@@ -77,17 +77,87 @@ async function listProjects(){if(!user)return;const area=$('cloudProjects');area
 async function listProjectsRefresh(){$('cloudDialog').close();await listProjects()}
 let db,auth;
 
-let sportsAuto=false,sportsBusy=false,sportsSaved='',sportsTimer=null;
+let sportsAuto=false,sportsBusy=false,sportsSaved='',sportsTimer=null,sportsDirty=false,sportsReady=false,sportsRemotePresent=false;
+const SPORTS_SYNC_PREF='basketlab_sports_sync_user_v14';
 const sportsRef=()=>doc(db,'users',user.uid,'sports','main');
-const sportsState=m=>{const e=document.getElementById('sportsCloudState');if(e)e.textContent=m;};
-async function sportsSave(force=false){if(!user){sportsState('Inicia sesión con Google primero (en Análisis de vídeo)');return}if(sportsBusy)return;const data=window.BasketLabSports.get(),json=JSON.stringify(data);if(json.length>800000){sportsState('Datos demasiado grandes para un documento de Firestore: exporta JSON');return}if(!force&&json===sportsSaved)return;sportsBusy=true;sportsState('Guardando gestión en Firebase…');try{await setDoc(sportsRef(),{data,ownerUid:user.uid,updatedAt:serverTimestamp()});sportsSaved=json;sportsState('✓ Gestión guardada en Firebase'+(sportsAuto?' · autoguardado activo':''))}catch(e){sportsState('⚠ Error Firebase: '+e.message)}finally{sportsBusy=false}}
-async function sportsLoad(){if(!user){sportsState('Inicia sesión con Google primero');return}if(!confirm('Recuperar gestión desde Firebase sustituirá los datos deportivos de este navegador. Exporta una copia JSON antes. ¿Continuar?'))return;sportsBusy=true;sportsState('Recuperando datos…');try{let snap=await getDoc(sportsRef());if(!snap.exists()){sportsState('No existe copia deportiva en Firebase para esta cuenta. Usa «Guardar gestión».');return}window.BasketLabSports.load(snap.data().data);sportsSaved=JSON.stringify(window.BasketLabSports.get());sportsState('✓ Gestión recuperada de Firebase')}catch(e){sportsState('⚠ No se pudo recuperar: '+e.message)}finally{sportsBusy=false}}
-window.addEventListener('basketlab-sports-command',async e=>{if(e.detail==='sportsSave'){if(confirm('¿Subir la gestión deportiva de este navegador a Firebase? Sustituirá la copia deportiva en la nube de esta cuenta.'))await sportsSave(true)}if(e.detail==='sportsLoad')await sportsLoad();if(e.detail==='sportsAuto'){if(!user){sportsState('Inicia sesión con Google primero');return}if(!sportsAuto){if(!confirm('Activar autoguardado: se sobrescribirá la gestión deportiva de Firebase con la copia de ESTE navegador. Si tienes datos en otro dispositivo, recupéralos antes. ¿Activar?'))return;sportsAuto=true;await sportsSave(true);sportsState('Autoguardado activo · cambios posteriores se sincronizan')}else{sportsAuto=false;clearTimeout(sportsTimer);sportsState('Autoguardado desactivado')}}});
-window.addEventListener('basketlab-sports-changed',()=>{if(!user||!sportsAuto)return;clearTimeout(sportsTimer);sportsTimer=setTimeout(()=>sportsSave(),1600)});
-window.addEventListener('basketlab-cloud-auth',e=>{if(!e.detail.signedIn){sportsAuto=false;clearTimeout(sportsTimer);sportsSaved='';sportsState('Sin sesión de Google · datos locales disponibles')}else sportsState('Sesión iniciada · pulsa Guardar o Recuperar gestión en Copias y datos')});
+const sportsState=m=>{const e=document.getElementById('sportsCloudState');if(e)e.textContent=m;const badge=document.getElementById('sportsSyncBadge');if(badge)badge.textContent=m;};
+function sportsControls(){const btn=document.querySelector('[data-action="sportsAuto"]');if(btn)btn.textContent=sportsAuto?'⏸ Desactivar autoguardado':'↻ Activar autoguardado';}
+async function sportsSave(force=false){
+ if(!user){sportsState('Sin sesión de Google · solo guardado local');return false}
+ if(sportsBusy){sportsDirty=true;return false}
+ const data=window.BasketLabSports.get(),json=JSON.stringify(data);
+ if(new Blob([json]).size>800000){sportsState('⚠ Datos demasiado grandes para Firestore: exporta una copia JSON');return false}
+ if(!force&&json===sportsSaved)return true;
+ sportsBusy=true;sportsState('☁ Guardando cambios en Firebase…');let ok=false;
+ try{await setDoc(sportsRef(),{data,ownerUid:user.uid,updatedAt:serverTimestamp()});sportsSaved=json;sportsRemotePresent=true;ok=true;sportsState('✓ Todos los módulos guardados en Firebase'+(sportsAuto?' · automático':''))}
+ catch(e){sportsState('⚠ No se guardó en Firebase: '+e.message);console.error('BasketLab deportes:',e)}
+ finally{sportsBusy=false;if(sportsDirty){sportsDirty=false;if(sportsAuto)setTimeout(()=>sportsSave(),350)}}
+ return ok;
+}
+async function sportsLoad(ask=true){
+ if(!user){sportsState('Inicia sesión con Google primero');return false}
+ if(ask&&!confirm('Recuperar gestión desde Firebase sustituirá TODOS los datos deportivos de este navegador, incluida la pizarra. Exporta antes una copia JSON. ¿Continuar?'))return false;
+ if(sportsBusy){sportsState('Hay una operación de guardado en curso. Inténtalo nuevamente.');return false}
+ sportsBusy=true;sportsState('☁ Recuperando datos de Firebase…');
+ try{const snap=await getDoc(sportsRef());if(!snap.exists()){sportsRemotePresent=false;sportsState('No hay copia deportiva en Firebase. Pulsa Guardar gestión para crearla.');return false}
+ const data=snap.data().data;if(!data||!Array.isArray(data.players))throw Error('Datos incompatibles');
+ window.BasketLabSports.load(data);sportsSaved=JSON.stringify(window.BasketLabSports.get());sportsRemotePresent=true;
+ sportsState('✓ Datos recuperados de Firebase · todos los módulos');return true;
+ }catch(e){sportsState('⚠ Error al recuperar: '+e.message);console.error(e);return false}
+ finally{sportsBusy=false}
+}
+async function sportsInspect(){
+ if(!user)return;
+ try{const snap=await getDoc(sportsRef());sportsRemotePresent=snap.exists();
+   if(!snap.exists()){sportsSaved='';sportsState('☁ Sesión iniciada · sin copia deportiva en la nube. Pulsa Guardar gestión.');return}
+   const remote=snap.data().data;const remoteJson=JSON.stringify(remote),localJson=JSON.stringify(window.BasketLabSports.get());
+   if(remoteJson===localJson){sportsSaved=remoteJson;sportsState('✓ Datos locales y Firebase coinciden');return}
+   sportsState('⚠ Hay datos en Firebase diferentes a los del navegador. Usa Recuperar o Guardar en Copias y datos.');
+ }catch(e){sportsState('⚠ No se pudo verificar Firestore: '+e.message)}
+}
+window.addEventListener('basketlab-sports-command',async e=>{
+ if(e.detail==='sportsSave'){
+   if(!confirm('¿Guardar en Firebase TODOS los módulos deportivos de este navegador (equipo, plantilla, asistencia, partidos, entrenamientos, scouting, competición, centro médico y pizarra)? La copia anterior se sustituirá.'))return;
+   await sportsSave(true);
+ }
+ if(e.detail==='sportsLoad'){await sportsLoad();}
+ if(e.detail==='sportsAuto'){
+   if(!user){sportsState('Inicia sesión con Google en Análisis de vídeo');return}
+   if(sportsAuto){sportsAuto=false;clearTimeout(sportsTimer);localStorage.removeItem(SPORTS_SYNC_PREF);sportsControls();sportsState('Autoguardado desactivado · datos locales conservados');return}
+   if(sportsBusy)return;
+   const snapshot=await getDoc(sportsRef()).catch(err=>{sportsState('⚠ No se pudo comprobar la nube: '+err.message);return null});
+   if(!snapshot)return;
+   if(snapshot.exists()){
+      const same=JSON.stringify(snapshot.data().data)===JSON.stringify(window.BasketLabSports.get());
+      if(!same){sportsState('⚠ Datos distintos entre este dispositivo y Firebase. Primero recupera o guarda conscientemente una copia.');alert('Existen datos diferentes en Firebase. Para evitar pérdidas, elige primero «Recuperar gestión» o «Guardar gestión». Después activa autoguardado.');return}
+   }
+   if(!confirm('Activar autoguardado en Firebase para TODOS los módulos deportivos? Los nuevos cambios se subirán automáticamente después de guardarse en este navegador.'))return;
+   const ok=await sportsSave(true);if(!ok)return;
+   sportsAuto=true;localStorage.setItem(SPORTS_SYNC_PREF,user.uid);sportsControls();sportsState('✓ Autoguardado Firebase activo · todos los módulos');
+ }
+});
+window.addEventListener('basketlab-sports-changed',()=>{
+ sportsState(sportsAuto?'● Cambios locales pendientes de Firebase…':'● Guardado local · activa Firebase en Copias y datos');
+ if(!user||!sportsAuto)return;
+ clearTimeout(sportsTimer);sportsTimer=setTimeout(()=>sportsSave(),1000);
+});
+window.addEventListener('basketlab-cloud-auth',async e=>{
+ sportsAuto=false;clearTimeout(sportsTimer);sportsSaved='';sportsControls();
+ if(!e.detail.signedIn){sportsState('Sin sesión de Google · datos locales disponibles');return}
+ const currentUid=e.detail.uid;
+ await sportsInspect();
+ if(!user||user.uid!==currentUid)return;
+ if(localStorage.getItem(SPORTS_SYNC_PREF)===currentUid){
+   const snap=await getDoc(sportsRef()).catch(()=>null);if(!snap)return;
+   if(snap.exists()&&JSON.stringify(snap.data().data)===JSON.stringify(window.BasketLabSports.get())){
+     sportsSaved=JSON.stringify(window.BasketLabSports.get());sportsAuto=true;sportsControls();sportsState('✓ Firebase conectado · autoguardado activado');
+   }else{localStorage.removeItem(SPORTS_SYNC_PREF);sportsState('⚠ Autoguardado pausado: la nube y este navegador no coinciden. Revisa Copias y datos.');}
+ }
+});
+window.addEventListener('beforeunload',e=>{if(sportsAuto&&user&&JSON.stringify(window.BasketLabSports.get())!==sportsSaved){e.preventDefault();e.returnValue='';}});
 
 try{const app=initializeApp(firebaseConfig);auth=getAuth(app);db=getFirestore(app);
- onAuthStateChanged(auth,u=>{user=u;window.dispatchEvent(new CustomEvent('basketlab-cloud-auth',{detail:{signedIn:!!u}}));enable(!!u);$('cloudUser').textContent=u?'Conectado como '+(u.email||u.displayName||'usuario')+'. Solo tú puedes acceder a tus proyectos.':'Sin sesión. Tus proyectos locales siguen disponibles.';if(u){state('Sesión iniciada · abre o guarda un proyecto');startAutosave()}else{cloudId=null;lastCloudJson='';clearInterval(saveTimer);state('Sin sesión')}});
+ onAuthStateChanged(auth,u=>{user=u;window.dispatchEvent(new CustomEvent('basketlab-cloud-auth',{detail:{signedIn:!!u,uid:u?.uid||null}}));enable(!!u);$('cloudUser').textContent=u?'Conectado como '+(u.email||u.displayName||'usuario')+'. Solo tú puedes acceder a tus proyectos.':'Sin sesión. Tus proyectos locales siguen disponibles.';if(u){state('Sesión iniciada · abre o guarda un proyecto');startAutosave()}else{cloudId=null;lastCloudJson='';clearInterval(saveTimer);state('Sin sesión')}});
  getRedirectResult(auth).catch(e=>state('⚠ Inicio de sesión: '+e.message));
  $('loginGoogle').onclick=async()=>{try{await signInWithPopup(auth,new GoogleAuthProvider())}catch(e){if(['auth/popup-blocked','auth/operation-not-supported-in-this-environment'].includes(e.code)){await signInWithRedirect(auth,new GoogleAuthProvider())}else{state('⚠ Inicio de sesión: '+e.message)}}};
  $('logoutGoogle').onclick=async()=>{if(cloudId)await saveCloud();await signOut(auth)};
@@ -112,8 +182,8 @@ try{const app=initializeApp(firebaseConfig);auth=getAuth(app);db=getFirestore(ap
 .bl-canvas-wrap canvas{cursor:grab}
 .bl-actions button:focus-visible,.bl-token:focus-visible{outline:3px solid #9adc9a}
 </style>
-<div id="v10Shell"><nav id="v10Nav" aria-label="Navegación principal"><div class="brand">🏀 BASKET<br>LAB V12</div></nav><div id="v10Body"><div id="v10Pages"></div></div></div>
-<div id="v10Toast" role="status"></div>
+<div id="v10Shell"><nav id="v10Nav" aria-label="Navegación principal"><div class="brand">🏀 BASKET<br>LAB V14</div></nav><div id="v10Body"><div id="v10Pages"></div></div></div>
+<div id="v10Toast" role="status"></div><style id="v14SyncStyle">#sportsSyncBadge{position:fixed;bottom:12px;left:285px;z-index:1200;max-width:min(520px,calc(100vw - 310px));padding:9px 13px;background:#102719;border:1px solid #488a53;border-radius:12px;color:#e0f5df;font-size:12px;box-shadow:0 6px 24px #0008;pointer-events:none}@media(max-width:750px){#sportsSyncBadge{left:12px;bottom:10px;max-width:calc(100vw - 24px)}}</style><div id="sportsSyncBadge" role="status" aria-live="polite" title="Estado de sincronización de la gestión deportiva">Sin sesión · guardado local</div>
 <script id="v10Code">
 (()=>{'use strict';
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),uid=()=>crypto?.randomUUID?.()||('id'+Date.now()+Math.random());
