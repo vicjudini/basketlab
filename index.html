@@ -80,6 +80,8 @@ let db,auth;
 let sportsAuto=false,sportsBusy=false,sportsSaved='',sportsTimer=null,sportsDirty=false,sportsReady=false,sportsRemotePresent=false;
 const SPORTS_SYNC_PREF='basketlab_sports_sync_user_v14';
 const sportsRef=()=>doc(db,'users',user.uid,'sports','main');
+// Firestore rechaza arrays dentro de arrays. Guardamos la gestion como JSON de texto.
+function sportsRemoteData(docData){if(typeof docData?.dataJson==='string')return JSON.parse(docData.dataJson);return docData?.data;}
 const sportsState=m=>{const e=document.getElementById('sportsCloudState');if(e)e.textContent=m;const badge=document.getElementById('sportsSyncBadge');if(badge)badge.textContent=m;};
 function sportsControls(){const btn=document.querySelector('[data-action="sportsAuto"]');if(btn)btn.textContent=sportsAuto?'⏸ Desactivar autoguardado':'↻ Activar autoguardado';}
 async function sportsSave(force=false){
@@ -89,7 +91,7 @@ async function sportsSave(force=false){
  if(new Blob([json]).size>800000){sportsState('⚠ Datos demasiado grandes para Firestore: exporta una copia JSON');return false}
  if(!force&&json===sportsSaved)return true;
  sportsBusy=true;sportsState('☁ Guardando cambios en Firebase…');let ok=false;
- try{await setDoc(sportsRef(),{data,ownerUid:user.uid,updatedAt:serverTimestamp()});sportsSaved=json;sportsRemotePresent=true;ok=true;sportsState('✓ Todos los módulos guardados en Firebase'+(sportsAuto?' · automático':''))}
+ try{await setDoc(sportsRef(),{dataJson:json,format:'json-v1',ownerUid:user.uid,updatedAt:serverTimestamp()});sportsSaved=json;sportsRemotePresent=true;ok=true;sportsState('✓ Todos los módulos guardados en Firebase'+(sportsAuto?' · automático':''))}
  catch(e){sportsState('⚠ No se guardó en Firebase: '+e.message);console.error('BasketLab deportes:',e)}
  finally{sportsBusy=false;if(sportsDirty){sportsDirty=false;if(sportsAuto)setTimeout(()=>sportsSave(),350)}}
  return ok;
@@ -100,7 +102,7 @@ async function sportsLoad(ask=true){
  if(sportsBusy){sportsState('Hay una operación de guardado en curso. Inténtalo nuevamente.');return false}
  sportsBusy=true;sportsState('☁ Recuperando datos de Firebase…');
  try{const snap=await getDoc(sportsRef());if(!snap.exists()){sportsRemotePresent=false;sportsState('No hay copia deportiva en Firebase. Pulsa Guardar gestión para crearla.');return false}
- const data=snap.data().data;if(!data||!Array.isArray(data.players))throw Error('Datos incompatibles');
+ const data=sportsRemoteData(snap.data());if(!data||!Array.isArray(data.players))throw Error('Datos incompatibles');
  window.BasketLabSports.load(data);sportsSaved=JSON.stringify(window.BasketLabSports.get());sportsRemotePresent=true;
  sportsState('✓ Datos recuperados de Firebase · todos los módulos');return true;
  }catch(e){sportsState('⚠ Error al recuperar: '+e.message);console.error(e);return false}
@@ -110,7 +112,7 @@ async function sportsInspect(){
  if(!user)return;
  try{const snap=await getDoc(sportsRef());sportsRemotePresent=snap.exists();
    if(!snap.exists()){sportsSaved='';sportsState('☁ Sesión iniciada · sin copia deportiva en la nube. Pulsa Guardar gestión.');return}
-   const remote=snap.data().data;const remoteJson=JSON.stringify(remote),localJson=JSON.stringify(window.BasketLabSports.get());
+   const remote=sportsRemoteData(snap.data());const remoteJson=JSON.stringify(remote),localJson=JSON.stringify(window.BasketLabSports.get());
    if(remoteJson===localJson){sportsSaved=remoteJson;sportsState('✓ Datos locales y Firebase coinciden');return}
    sportsState('⚠ Hay datos en Firebase diferentes a los del navegador. Usa Recuperar o Guardar en Copias y datos.');
  }catch(e){sportsState('⚠ No se pudo verificar Firestore: '+e.message)}
@@ -128,7 +130,7 @@ window.addEventListener('basketlab-sports-command',async e=>{
    const snapshot=await getDoc(sportsRef()).catch(err=>{sportsState('⚠ No se pudo comprobar la nube: '+err.message);return null});
    if(!snapshot)return;
    if(snapshot.exists()){
-      const same=JSON.stringify(snapshot.data().data)===JSON.stringify(window.BasketLabSports.get());
+      const same=JSON.stringify(sportsRemoteData(snapshot.data()))===JSON.stringify(window.BasketLabSports.get());
       if(!same){sportsState('⚠ Datos distintos entre este dispositivo y Firebase. Primero recupera o guarda conscientemente una copia.');alert('Existen datos diferentes en Firebase. Para evitar pérdidas, elige primero «Recuperar gestión» o «Guardar gestión». Después activa autoguardado.');return}
    }
    if(!confirm('Activar autoguardado en Firebase para TODOS los módulos deportivos? Los nuevos cambios se subirán automáticamente después de guardarse en este navegador.'))return;
@@ -149,7 +151,7 @@ window.addEventListener('basketlab-cloud-auth',async e=>{
  if(!user||user.uid!==currentUid)return;
  if(localStorage.getItem(SPORTS_SYNC_PREF)===currentUid){
    const snap=await getDoc(sportsRef()).catch(()=>null);if(!snap)return;
-   if(snap.exists()&&JSON.stringify(snap.data().data)===JSON.stringify(window.BasketLabSports.get())){
+   if(snap.exists()&&JSON.stringify(sportsRemoteData(snap.data()))===JSON.stringify(window.BasketLabSports.get())){
      sportsSaved=JSON.stringify(window.BasketLabSports.get());sportsAuto=true;sportsControls();sportsState('✓ Firebase conectado · autoguardado activado');
    }else{localStorage.removeItem(SPORTS_SYNC_PREF);sportsState('⚠ Autoguardado pausado: la nube y este navegador no coinciden. Revisa Copias y datos.');}
  }
@@ -182,7 +184,7 @@ try{const app=initializeApp(firebaseConfig);auth=getAuth(app);db=getFirestore(ap
 .bl-canvas-wrap canvas{cursor:grab}
 .bl-actions button:focus-visible,.bl-token:focus-visible{outline:3px solid #9adc9a}
 </style>
-<div id="v10Shell"><nav id="v10Nav" aria-label="Navegación principal"><div class="brand">🏀 BASKET<br>LAB V14</div></nav><div id="v10Body"><div id="v10Pages"></div></div></div>
+<div id="v10Shell"><nav id="v10Nav" aria-label="Navegación principal"><div class="brand">🏀 BASKET<br>LAB V14.1</div></nav><div id="v10Body"><div id="v10Pages"></div></div></div>
 <div id="v10Toast" role="status"></div><style id="v14SyncStyle">#sportsSyncBadge{position:fixed;bottom:12px;left:285px;z-index:1200;max-width:min(520px,calc(100vw - 310px));padding:9px 13px;background:#102719;border:1px solid #488a53;border-radius:12px;color:#e0f5df;font-size:12px;box-shadow:0 6px 24px #0008;pointer-events:none}@media(max-width:750px){#sportsSyncBadge{left:12px;bottom:10px;max-width:calc(100vw - 24px)}}</style><div id="sportsSyncBadge" role="status" aria-live="polite" title="Estado de sincronización de la gestión deportiva">Sin sesión · guardado local</div>
 <script id="v10Code">
 (()=>{'use strict';
