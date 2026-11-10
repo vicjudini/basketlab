@@ -395,7 +395,68 @@ function filterLibrary(){
  const count=$('blLibraryCount');if(count)count.textContent=visible+' contenidos';
  const none=$('blLibNoResults');if(none)none.hidden=!!visible;
 }
-function printTraining(t){
+// Acciones del planificador: todas se resuelven antes del manejador general.
+ function trainingTimerStop(){
+   trainingClock.running=false;
+   if(trainingTicker!==null){clearInterval(trainingTicker);trainingTicker=null;}
+ }
+ function trainingClockDisplay(){
+   const clock=$('blTrainClock'),caption=$('blTrainClockTitle');
+   if(clock)clock.textContent=secondsLabel(trainingClock.remaining);
+   if(caption){const session=db.training.find(x=>x.id===trainingClock.sessionId);
+     const block=safeBlocks(session).find(x=>x.id===trainingClock.blockId);
+     caption.textContent=block?(block.title+(trainingClock.running?' · En marcha':' · Pausado')):'Sin ejercicio en marcha';}
+ }
+ function trainingTimerStart(){
+   if(trainingClock.running)return;
+   if(trainingClock.remaining<=0){toast('Selecciona un bloque con ▶ Cronómetro');return;}
+   trainingClock.running=true;trainingClock.last=Date.now();
+   trainingTicker=setInterval(()=>{
+     const now=Date.now(),elapsed=Math.max(0,(now-trainingClock.last)/1000);
+     trainingClock.last=now;
+     trainingClock.remaining=Math.max(0,trainingClock.remaining-elapsed);
+     if(trainingClock.remaining===0){trainingTimerStop();toast('Tiempo del bloque finalizado');}
+     trainingClockDisplay();
+   },200);
+   trainingClockDisplay();
+ }
+ function trainingAction(action,id){
+   const t=trainingSelected();
+   if(action==='printTraining'){const session=db.training.find(x=>x.id===id);if(session)printTraining(session);else toast('No se encontró el entrenamiento');return true;}
+   if(action==='edit-training'){editing.training=id;render();return true;}
+   if(action==='delete-training'){const session=db.training.find(x=>x.id===id);if(!session)return true;
+     if(!confirm('¿Eliminar este entrenamiento y todos sus bloques?'))return true;
+     db.training=db.training.filter(x=>x.id!==id);
+     if(selectedTrainingId===id)selectedTrainingId=null;
+     if(trainingClock.sessionId===id){trainingTimerStop();trainingClock={sessionId:null,blockId:null,remaining:0,running:false,last:0};}
+     editing.training=null;editingBlockId=null;store();render();return true;}
+   if(action==='duplicateTraining'){const session=db.training.find(x=>x.id===id);if(!session)return true;
+     const clone=structuredClone(session);clone.id=uid();clone.objective=(clone.objective||'Entrenamiento')+' (copia)';
+     clone.blocks=safeBlocks(clone).map(b=>({...b,id:uid()}));
+     db.training.push(clone);selectedTrainingId=clone.id;editingBlockId=null;store();render();toast('Sesión duplicada');return true;}
+   if(action==='toggleClock'){if(trainingClock.running)trainingTimerStop();else trainingTimerStart();trainingClockDisplay();return true;}
+   if(action==='resetClock'){trainingTimerStop();const session=db.training.find(x=>x.id===trainingClock.sessionId);
+     const block=safeBlocks(session).find(x=>x.id===trainingClock.blockId);
+     trainingClock.remaining=block?Math.max(0,Number(block.duration)||0)*60:0;
+     trainingClockDisplay();return true;}
+   if(action==='cancelBlock'){editingBlockId=null;render();return true;}
+   if(!t)return false;
+   if(action==='startBlock'){const block=safeBlocks(t).find(x=>x.id===id);if(!block)return true;
+     trainingTimerStop();trainingClock={sessionId:t.id,blockId:id,remaining:Math.max(0,Number(block.duration)||0)*60,running:false,last:0};
+     trainingTimerStart();trainingClockDisplay();return true;}
+   if(action==='openBlockDiagram'){openDiagram(safeBlocks(t).find(x=>x.id===id)?.diagramBoard);return true;}
+   if(action==='editBlock'){editingBlockId=id;render();return true;}
+   if(['moveBlockUp','moveBlockDown'].includes(action)){const at=safeBlocks(t).findIndex(x=>x.id===id),to=at+(action==='moveBlockUp'?-1:1);
+     if(at<0||to<0||to>=safeBlocks(t).length)return true;
+     [t.blocks[at],t.blocks[to]]=[t.blocks[to],t.blocks[at]];store();render();return true;}
+   if(action==='deleteBlock'){const at=safeBlocks(t).findIndex(x=>x.id===id);if(at<0)return true;
+     if(!confirm('¿Eliminar este bloque de la sesión?'))return true;
+     t.blocks.splice(at,1);if(editingBlockId===id)editingBlockId=null;
+     if(trainingClock.blockId===id){trainingTimerStop();trainingClock={sessionId:null,blockId:null,remaining:0,running:false,last:0};}
+     store();render();return true;}
+   return false;
+ }
+ function printTraining(t){
  let blocks=safeBlocks(t),players=[...db.players].sort((a,b)=>String(a.number||'').localeCompare(String(b.number||''),'es',{numeric:true}));
  const status=p=>db.attendance?.[t.id+':'+p.id]||'';
  const names=code=>players.filter(p=>status(p)===code);
@@ -412,7 +473,8 @@ function printTraining(t){
  w.document.open();
  w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Entrenamiento BasketLab</title><style>
  *{box-sizing:border-box}body{font:10px/1.28 Arial,sans-serif;color:#263126;margin:0;padding:0}header{display:flex;justify-content:space-between;color:#ae5a33;border-bottom:2px solid #e2bb91;padding:0 0 5px;margin-bottom:7px;font-size:11px}h1{font-size:19px;margin:4px 0}.meta{font-size:9px;margin:3px 0}.attendance{background:#f4f5f1;border:1px solid #ccd4ca;padding:6px 8px;margin:7px 0}.attendance h2,.plan-title{font-size:12px;margin:0 0 5px}.attgrid{display:grid;grid-template-columns:1fr 1.5fr 1fr;gap:8px}.attgrid div{min-width:0}.attgrid b{display:block;font-size:9px;margin-bottom:3px}.attgrid span{display:block;font-size:8px;overflow-wrap:anywhere;margin:1px 0}.block{border:1px solid #d4d8d4;border-left:3px solid #e38c5e;padding:6px 8px;margin:5px 0;break-inside:avoid}.block h2{font-size:11px;margin:0 0 3px}.block p{font-size:9px;margin:3px 0;white-space:pre-wrap}.diagram{display:block;width:auto;max-width:100%;height:auto;max-height:28mm;aspect-ratio:1.414/1;object-fit:contain;margin:3px auto}small{font-weight:normal;color:#526252;font-size:8px}.plan-title{margin-top:7px}footer{margin-top:7px;border-top:1px solid #ddd;padding-top:4px;font-size:8px}@page{size:A4;margin:10mm}
- </style></head><body>${content}<script>window.addEventListener('load',()=>{const imgs=[...document.images];Promise.all(imgs.map(i=>i.complete?Promise.resolve():new Promise(r=>{i.onload=r;i.onerror=r}))).then(()=>setTimeout(()=>{try{window.focus();window.print()}catch(e){}},250))});<\/script></body></html>`);
+ @media screen{.print-controls{position:sticky;top:0;background:white;padding:12px;text-align:center;border-bottom:1px solid #ccc}.print-controls button{background:#287941;color:#fff;border:0;border-radius:7px;padding:10px 22px;cursor:pointer}}@media print{.print-controls{display:none!important}}
+ </style></head><body><div class="print-controls"><button onclick="window.print()">⎙ Imprimir / Guardar en PDF</button></div>${content}<script>window.addEventListener('load',()=>{const imgs=[...document.images];Promise.all(imgs.map(i=>i.complete?Promise.resolve():new Promise(r=>{i.onload=r;i.onerror=r}))).then(()=>setTimeout(()=>{try{window.focus();window.print()}catch(e){}},250))});<\/script></body></html>`);
  w.document.close();
 }
 function exportScoutPdf(id){const s=db.scouting.find(x=>x.id===id);if(!s)return toast('No se encontró el informe');const win=window.open('','_blank');if(!win){toast('Permite las ventanas emergentes para exportar el informe');return}win.document.open();win.document.write(scoutReportHtml(s));win.document.close();win.focus();toast('Informe con gráficas y diagramas preparado para imprimir / PDF')}
