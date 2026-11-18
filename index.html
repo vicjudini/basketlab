@@ -1895,7 +1895,7 @@ async function loadProfile(){const p=await api('https://www.googleapis.com/oauth
 
 /* ---------- Drive ---------- */
 const q=s=>encodeURIComponent(s);
-const FILE_FIELDS='id,name,modifiedTime,version,size,webViewLink,appProperties';
+const FILE_FIELDS='id,name,modifiedTime,version,size,md5Checksum,webViewLink,appProperties';
 async function findFiles(query){const r=await api(`${DRIVE}/files?q=${q(query)}&spaces=drive&pageSize=200&orderBy=modifiedTime desc&fields=${q('files('+FILE_FIELDS+')')}`);return r.files||[]}
 async function getMeta(id){return api(`${DRIVE}/files/${id}?fields=${q(FILE_FIELDS+',trashed')}`)}
 async function download(id){const r=await api(`${DRIVE}/files/${id}?alt=media`,{raw:true});return r.text()}
@@ -1942,6 +1942,9 @@ async function resolveSports(){
  else setSync('⚠ Sincronización en pausa: hay versiones distintas. Decide en Copias y datos.','warn')}
 async function backupCopy(json,label){try{await upload(null,{name:`Respaldo ${label} · ${new Date().toLocaleString('es-ES').replace(/[/:]/g,'-')}.json`,parents:[folder.id],mimeType:'application/json',appProperties:{blType:'backup'}},JSON.stringify({format:'basketlab-sports',version:20,savedAt:new Date().toISOString(),data:JSON.parse(json)}))}catch(e){console.warn('Respaldo no creado',e)}}
 async function sportsWrite(){const json=localJson();sportsFile=await upload(sportsFile?.id||null,sportsFile?.id?{}:{name:'BasketLab · gestión deportiva.json',parents:[folder.id],mimeType:'application/json',appProperties:{blType:'sports'}},sportsPayload());sportsSaved=json;lastSync=Date.now();LS.set(K.localChanged,'0');return true}
+// Drive cambia el número de versión por procesos internos aunque el contenido sea el mismo.
+// Por eso se compara la huella (md5) y, si hace falta, el contenido real.
+async function remoteChanged(m){if(m.md5Checksum&&sportsFile?.md5Checksum&&m.md5Checksum===sportsFile.md5Checksum){sportsFile=m;return null}const r=parseSports(await download(m.id)),rj=JSON.stringify(r.data);if(rj===sportsSaved||rj===localJson()){sportsFile=m;if(rj!==sportsSaved&&rj===localJson())sportsSaved=rj;return null}return r}
 async function sportsSave(manual=false){
  if(!profile){setSync('Sin cuenta · guardado solo en este navegador','off');if(manual)openGate();return false}
  if(!tokenValid()){setSync('⚠ Sesión de Google caducada · pulsa tu cuenta y «Reconectar»','warn');return false}
@@ -1952,22 +1955,23 @@ async function sportsSave(manual=false){
   if(!folder)await ensureFolder();
   if(sportsFile?.id){const m=await getMeta(sportsFile.id).catch(e=>{if(e.status===404)return null;throw e});
    if(!m||m.trashed){sportsFile=null}
-   else if(String(m.version)!==String(sportsFile.version)){
+   else{const remote=await remoteChanged(m);if(remote){
+    if($('blSyncDialog').open){sportsDirty=true;return false}
     const pick=await choose('Drive tiene cambios más recientes',`Alguien (u otro de tus dispositivos) guardó cambios en Google Drive el <b>${esc(fmt(m.modifiedTime))}</b>, después de tu última sincronización. Si subes ahora, esos cambios se sustituirán.`,[
      {value:'remote',label:'Cargar la versión de Drive',sub:'Tus cambios locales recientes se guardan como respaldo en Drive',primary:true},
      {value:'local',label:'Sobrescribir con este dispositivo',sub:'La versión de Drive se guarda como respaldo'},
      {value:null,label:'Pausar la sincronización'}]);
-    if(pick==='remote'){const r=parseSports(await download(m.id));await backupCopy(localJson(),'este dispositivo');sportsFile=m;applyRemote(r.data);setSync('✓ Datos actualizados desde Google Drive','ok');return true}
+    if(pick==='remote'){await backupCopy(localJson(),'este dispositivo');sportsFile=m;applyRemote(remote.data);setSync('✓ Datos actualizados desde Google Drive','ok');return true}
     if(pick!=='local'){sportsAuto=false;setSync('⚠ Sincronización en pausa: revisa Copias y datos','warn');return false}
-    await backupCopy(await download(m.id).then(t=>JSON.stringify(parseSports(t).data)),'Drive anterior')}}
+    await backupCopy(JSON.stringify(remote.data),'Drive anterior')}}}
   await sportsWrite();setSync('✓ Guardado en Google Drive · '+new Date().toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}),'ok');return true
  }catch(e){console.error('BasketLab Drive:',e);setSync('⚠ No se guardó en Drive: '+e.message,'warn');return false}
  finally{sportsBusy=false;if(sportsDirty){sportsDirty=false;if(sportsAuto)setTimeout(()=>sportsSave(),400)}}}
 async function sportsPull(silent){
  if(!signedIn()||!sportsAuto||!sportsFile?.id||sportsBusy)return;
  if(localJson()!==sportsSaved)return sportsSave();
- try{const m=await getMeta(sportsFile.id);if(String(m.version)===String(sportsFile.version))return;
-  const r=parseSports(await download(m.id));sportsFile=m;applyRemote(r.data);lastSync=Date.now();setSync('✓ Actualizado con cambios de Google Drive','ok');if(!silent)toast('Se han cargado cambios hechos en otro dispositivo')}catch(e){if(e.code==='auth')setSync('⚠ Sesión de Google caducada · pulsa tu cuenta y «Reconectar»','warn')}}
+ try{const m=await getMeta(sportsFile.id);const r=await remoteChanged(m);if(!r)return;if(localJson()!==sportsSaved)return;
+  sportsFile=m;applyRemote(r.data);lastSync=Date.now();setSync('✓ Actualizado con cambios de Google Drive','ok');if(!silent)toast('Se han cargado cambios hechos en otro dispositivo')}catch(e){if(e.code==='auth')setSync('⚠ Sesión de Google caducada · pulsa tu cuenta y «Reconectar»','warn')}}
 window.addEventListener('basketlab-sports-changed',()=>{LS.set(K.localChanged,String(Date.now()));
  if(!profile){setSync('● Guardado en este navegador · sin cuenta de Google','off');return}
  if(!sportsAuto){setSync('● Guardado local · sincronización con Drive en pausa','warn');return}
